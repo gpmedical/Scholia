@@ -1,6 +1,15 @@
 import { clerkMiddleware } from '@clerk/nextjs/server'
 
-export default clerkMiddleware()
+export default clerkMiddleware({
+	contentSecurityPolicy: {
+		strict: true,
+		directives: {
+			'base-uri': ['self'],
+			'frame-ancestors': ['none'],
+			'object-src': ['none'],
+		},
+	},
+})
 
 export const config = {
 	matcher: [

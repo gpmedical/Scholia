@@ -82,7 +82,11 @@ const upsertAnnotationSchema = z
 		endOffset: z.number().int().positive(),
 		selectedText: z.string().min(1).max(10_000),
 		partOfSpeech: z.enum(PARTS_OF_SPEECH),
-		morphology: z.record(z.string(), z.string().max(100)),
+		morphology: z
+			.record(z.string().max(50), z.string().max(100))
+			.refine((value) => Object.keys(value).length <= 50, {
+				message: 'Too many morphology fields.',
+			}),
 		comment: z.string().trim().max(10_000),
 		lemma: lemmaChoiceSchema.nullable(),
 	})
@@ -90,14 +94,24 @@ const upsertAnnotationSchema = z
 		message: 'The annotation range is invalid',
 	})
 
+const SAFE_ACTION_ERRORS = new Set([
+	'Annotation not found',
+	'Base form not found',
+	'Chapter not found',
+	'Project not found',
+	'The source text changed. Select the passage again.',
+])
+
 function getActionError(err: unknown): string {
-	console.error(err)
+	console.error('Server action failed', {
+		type: err instanceof Error ? err.name : typeof err,
+	})
 
 	if (err instanceof z.ZodError) {
 		return err.issues[0]?.message ?? 'Check the submitted fields.'
 	}
 
-	if (err instanceof Error) {
+	if (err instanceof Error && SAFE_ACTION_ERRORS.has(err.message)) {
 		return err.message
 	}
 
