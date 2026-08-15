@@ -1,0 +1,4 @@
+[build.environment]
+  # Clerk's NEXT_PUBLIC_* values are intentionally embedded in the browser bundle.
+  # Keep secret scanning enabled for CLERK_SECRET_KEY and all other server secrets.
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,NEXT_PUBLIC_CLERK_SIGN_IN_URL,NEXT_PUBLIC_CLERK_SIGN_UP_URL,NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL,NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL"
