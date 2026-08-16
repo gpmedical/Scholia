@@ -16,7 +16,7 @@ interface LexiconPageProps {
 export default async function LexiconPage({ params }: LexiconPageProps) {
 	const { projectId } = await params
 	const userId = await requireUserId()
-	const data = getProjectLexicon(userId, projectId)
+	const data = await getProjectLexicon(userId, projectId)
 
 	if (!data) {
 		notFound()

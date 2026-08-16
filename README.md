@@ -48,9 +48,13 @@ pnpm build
 The architecture, data flow, pseudocode, and edge-case decisions are documented
 in [`docs/architecture.md`](docs/architecture.md).
 
-## Deployment note
+## Deployment
 
-The included SQLite adapter is ideal for local or single-server deployments.
-Before deploying to an ephemeral or multi-instance platform, replace the adapter
-behind `lib/data-access.ts` with a durable SQL service while keeping the same
-user-ownership checks.
+Local development and tests use SQLite at `data/scholia.db`. On Netlify, the
+server-only data layer automatically uses Netlify Database (managed Postgres)
+when `NETLIFY_DB_URL` or the Netlify runtime metadata is available. The schema
+in `netlify/database/migrations` is applied by Netlify during deployment.
+
+The database connection string must remain a Functions-scoped server variable.
+Do not prefix it with `NEXT_PUBLIC_`, expose it to Client Components, or add it
+to `SECRETS_SCAN_OMIT_KEYS`.

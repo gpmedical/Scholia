@@ -29,8 +29,8 @@ describe('user-scoped data access', () => {
 	let chapterId = ''
 	let annotationId = ''
 
-	it('creates a project and keeps it private to its owner', () => {
-		const created = dataAccess.createProject(firstUser, {
+	it('creates a project and keeps it private to its owner', async () => {
+		const created = await dataAccess.createProject(firstUser, {
 			name: 'Aeneid',
 			description: 'Book I seminar',
 			language: 'LATIN',
@@ -39,55 +39,55 @@ describe('user-scoped data access', () => {
 		projectId = created.projectId
 		chapterId = created.chapterId
 
-		expect(dataAccess.getProjectsForUser(firstUser)).toHaveLength(1)
-		expect(dataAccess.getProjectsForUser(secondUser)).toHaveLength(0)
-		expect(dataAccess.getProjectForUser(secondUser, projectId)).toBeNull()
+		expect(await dataAccess.getProjectsForUser(firstUser)).toHaveLength(1)
+		expect(await dataAccess.getProjectsForUser(secondUser)).toHaveLength(0)
+		expect(await dataAccess.getProjectForUser(secondUser, projectId)).toBeNull()
 	})
 
-	it('rejects chapter creation by a different user', () => {
-		expect(() => {
+	it('rejects chapter creation by a different user', async () => {
+		await expect(
 			dataAccess.createChapter(secondUser, {
 				projectId,
 				title: 'Stolen chapter',
 				originalText: '',
-			})
-		}).toThrow('Project not found')
+			}),
+		).rejects.toThrow('Project not found')
 	})
 
-	it('renames only projects and chapters owned by the user', () => {
+	it('renames only projects and chapters owned by the user', async () => {
 		expect(
-			dataAccess.renameProject(secondUser, {
+			await dataAccess.renameProject(secondUser, {
 				projectId,
 				name: 'Stolen project',
 			}),
 		).toBe(false)
 		expect(
-			dataAccess.renameProject(firstUser, {
+			await dataAccess.renameProject(firstUser, {
 				projectId,
 				name: 'Aeneid seminar',
 			}),
 		).toBe(true)
 		expect(
-			dataAccess.renameChapter(secondUser, {
+			await dataAccess.renameChapter(secondUser, {
 				chapterId,
 				title: 'Stolen chapter',
 			}),
 		).toBeNull()
 		expect(
-			dataAccess.renameChapter(firstUser, {
+			await dataAccess.renameChapter(firstUser, {
 				chapterId,
 				title: 'Book I',
 			}),
 		).toBe(projectId)
 
-		const project = dataAccess.getProjectForUser(firstUser, projectId)
+		const project = await dataAccess.getProjectForUser(firstUser, projectId)
 
 		expect(project?.name).toBe('Aeneid seminar')
 		expect(project?.chapters[0]?.title).toBe('Book I')
 	})
 
-	it('stores source text, annotation grammar, and a new lemma', () => {
-		dataAccess.saveChapterContent(firstUser, {
+	it('stores source text, annotation grammar, and a new lemma', async () => {
+		await dataAccess.saveChapterContent(firstUser, {
 			chapterId,
 			originalText: 'Arma virumque cano',
 			translationText: 'I sing of arms and the man',
@@ -114,7 +114,7 @@ describe('user-scoped data access', () => {
 				details: '3rd conjugation',
 			},
 		}
-		const result = dataAccess.upsertAnnotation(firstUser, input)
+		const result = await dataAccess.upsertAnnotation(firstUser, input)
 
 		annotationId = result.annotation.id
 		expect(result.annotation.lineNumber).toBe(1)
@@ -122,8 +122,8 @@ describe('user-scoped data access', () => {
 		expect(result.annotation.morphology.mood).toBe('Indicative')
 	})
 
-	it('groups the annotated form under its lemma occurrence', () => {
-		const lexicon = dataAccess.getProjectLexicon(firstUser, projectId)
+	it('groups the annotated form under its lemma occurrence', async () => {
+		const lexicon = await dataAccess.getProjectLexicon(firstUser, projectId)
 
 		expect(lexicon?.lemmas).toHaveLength(1)
 		expect(lexicon?.lemmas[0]?.occurrences[0]).toMatchObject({
@@ -131,11 +131,11 @@ describe('user-scoped data access', () => {
 			chapterId,
 			selectedText: 'cano',
 		})
-		expect(dataAccess.getProjectLexicon(secondUser, projectId)).toBeNull()
+		expect(await dataAccess.getProjectLexicon(secondUser, projectId)).toBeNull()
 	})
 
-	it('reanchors an annotation after text is inserted before it', () => {
-		const annotations = dataAccess.saveChapterContent(firstUser, {
+	it('reanchors an annotation after text is inserted before it', async () => {
+		const annotations = await dataAccess.saveChapterContent(firstUser, {
 			chapterId,
 			originalText: 'Muse, Arma virumque cano',
 			translationText: 'I sing of arms and the man',
@@ -148,8 +148,8 @@ describe('user-scoped data access', () => {
 		})
 	})
 
-	it('preserves a removed annotation as an orphan for review', () => {
-		const annotations = dataAccess.saveChapterContent(firstUser, {
+	it('preserves a removed annotation as an orphan for review', async () => {
+		const annotations = await dataAccess.saveChapterContent(firstUser, {
 			chapterId,
 			originalText: 'Arma virumque',
 			translationText: 'Arms and the man',
@@ -163,8 +163,12 @@ describe('user-scoped data access', () => {
 		})
 	})
 
-	it('prevents another user from deleting an annotation', () => {
-		expect(dataAccess.deleteAnnotation(secondUser, annotationId)).toBe(false)
-		expect(dataAccess.deleteAnnotation(firstUser, annotationId)).toBe(true)
+	it('prevents another user from deleting an annotation', async () => {
+		expect(await dataAccess.deleteAnnotation(secondUser, annotationId)).toBe(
+			false,
+		)
+		expect(await dataAccess.deleteAnnotation(firstUser, annotationId)).toBe(
+			true,
+		)
 	})
 })

@@ -60,11 +60,12 @@ annotations
   created_at, updated_at
 ```
 
-SQLite access is isolated in a `server-only` data access layer. Queries are
-parameterized. The current Clerk user ID is included in every project,
-chapter, lemma, and annotation lookup so guessing an ID cannot expose or
-mutate another user's data. Only plain, minimal DTOs cross the Server/Client
-boundary.
+Database access is isolated in a `server-only` data access layer. Local
+development and tests use SQLite; Netlify Functions use Netlify Database
+(Postgres) through the same asynchronous interface. Queries are parameterized.
+The current Clerk user ID is included in every project, chapter, lemma, and
+annotation lookup so guessing an ID cannot expose or mutate another user's
+data. Only plain, minimal DTOs cross the Server/Client boundary.
 
 ## Component architecture
 

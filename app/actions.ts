@@ -124,7 +124,7 @@ export async function createProjectAction(
 	try {
 		const userId = await requireUserId()
 		const validatedInput = createProjectSchema.parse(input)
-		const project = createProject(userId, validatedInput)
+		const project = await createProject(userId, validatedInput)
 
 		revalidatePath('/dashboard')
 
@@ -140,7 +140,7 @@ export async function deleteProjectAction(
 	try {
 		const userId = await requireUserId()
 		const validatedProjectId = identifierSchema.parse(projectId)
-		const isDeleted = deleteProject(userId, validatedProjectId)
+		const isDeleted = await deleteProject(userId, validatedProjectId)
 
 		if (!isDeleted) {
 			throw new Error('Project not found')
@@ -160,7 +160,7 @@ export async function renameProjectAction(
 	try {
 		const userId = await requireUserId()
 		const validatedInput = renameProjectSchema.parse(input)
-		const isRenamed = renameProject(userId, validatedInput)
+		const isRenamed = await renameProject(userId, validatedInput)
 
 		if (!isRenamed) {
 			throw new Error('Project not found')
@@ -181,7 +181,7 @@ export async function createChapterAction(
 	try {
 		const userId = await requireUserId()
 		const validatedInput = createChapterSchema.parse(input)
-		const chapter = createChapter(userId, validatedInput)
+		const chapter = await createChapter(userId, validatedInput)
 
 		revalidatePath(`/projects/${validatedInput.projectId}`)
 
@@ -199,7 +199,7 @@ export async function deleteChapterAction(
 		const userId = await requireUserId()
 		const validatedChapterId = identifierSchema.parse(chapterId)
 		const validatedProjectId = identifierSchema.parse(projectId)
-		const isDeleted = deleteChapter(userId, validatedChapterId)
+		const isDeleted = await deleteChapter(userId, validatedChapterId)
 
 		if (!isDeleted) {
 			throw new Error('Chapter not found')
@@ -219,7 +219,7 @@ export async function renameChapterAction(
 	try {
 		const userId = await requireUserId()
 		const validatedInput = renameChapterSchema.parse(input)
-		const projectId = renameChapter(userId, validatedInput)
+		const projectId = await renameChapter(userId, validatedInput)
 
 		if (!projectId) {
 			throw new Error('Chapter not found')
@@ -242,7 +242,7 @@ export async function saveChapterContentAction(
 	try {
 		const userId = await requireUserId()
 		const validatedInput = saveChapterContentSchema.parse(input)
-		const annotations = saveChapterContent(userId, validatedInput)
+		const annotations = await saveChapterContent(userId, validatedInput)
 
 		return { success: true, data: annotations }
 	} catch (err) {
@@ -261,7 +261,7 @@ export async function upsertAnnotationAction(
 	try {
 		const userId = await requireUserId()
 		const validatedInput = upsertAnnotationSchema.parse(input)
-		const result = upsertAnnotation(userId, validatedInput)
+		const result = await upsertAnnotation(userId, validatedInput)
 
 		return { success: true, data: result }
 	} catch (err) {
@@ -277,7 +277,7 @@ export async function deleteAnnotationAction(
 		const userId = await requireUserId()
 		const validatedAnnotationId = identifierSchema.parse(annotationId)
 		const validatedProjectId = identifierSchema.parse(projectId)
-		const isDeleted = deleteAnnotation(userId, validatedAnnotationId)
+		const isDeleted = await deleteAnnotation(userId, validatedAnnotationId)
 
 		if (!isDeleted) {
 			throw new Error('Annotation not found')
