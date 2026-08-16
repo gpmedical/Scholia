@@ -60,12 +60,11 @@ annotations
   created_at, updated_at
 ```
 
-Database access is isolated in a `server-only` data access layer. Local
-development and tests use SQLite; Netlify Functions use Netlify Database
-(Postgres) through the same asynchronous interface. Queries are parameterized.
-The current Clerk user ID is included in every project, chapter, lemma, and
-annotation lookup so guessing an ID cannot expose or mutate another user's
-data. Only plain, minimal DTOs cross the Server/Client boundary.
+Database access is isolated in a `server-only` data access layer backed by
+Netlify Database (Postgres). Queries are parameterized. The current Clerk user
+ID is included in every project, chapter, lemma, and annotation lookup so
+guessing an ID cannot expose or mutate another user's data. Only plain,
+minimal DTOs cross the Server/Client boundary.
 
 ## Component architecture
 
@@ -279,15 +278,13 @@ ON occurrence click:
 
 ## Verification strategy
 
-1. Run TypeScript/Next.js linting.
-2. Run data-layer tests for ownership, CRUD, annotation re-anchoring, and
-   occurrence grouping.
-3. Run component tests for selection trimming, line calculation, dynamic
-   morphology fields, and autosave status.
-4. Produce a clean production build.
-5. Run the development server and exercise public, signed-out redirect,
+1. Run TypeScript and Next.js linting.
+2. Apply the migration to an isolated database and exercise ownership, CRUD,
+   annotation re-anchoring, and occurrence grouping.
+3. Produce a clean production build.
+4. Run the development server and exercise public, signed-out redirect,
    sign-up/sign-in, project creation, text import, editing, annotation,
    lemma-index navigation, responsive layout, and deletion flows in a real
    browser.
-6. Fix all discovered console, runtime, accessibility, and visual defects,
+5. Fix all discovered console, runtime, accessibility, and visual defects,
    then repeat the affected checks.
