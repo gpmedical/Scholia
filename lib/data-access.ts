@@ -1041,12 +1041,28 @@ export async function getProjectLexicon(
 		}
 	}
 
+	const locale = project.language === 'GREEK' ? 'el' : 'en'
+	const alphabeticCollator = new Intl.Collator(locale, {
+		usage: 'sort',
+		sensitivity: 'base',
+	})
+	const spellingCollator = new Intl.Collator(locale, {
+		usage: 'sort',
+		sensitivity: 'variant',
+	})
+	const lemmas = Array.from(lemmaMap.values()).sort(
+		(firstLemma, secondLemma) =>
+			alphabeticCollator.compare(firstLemma.headword, secondLemma.headword) ||
+			spellingCollator.compare(firstLemma.headword, secondLemma.headword) ||
+			firstLemma.id.localeCompare(secondLemma.id),
+	)
+
 	return {
 		project: {
 			id: project.id,
 			name: project.name,
 			language: project.language,
 		},
-		lemmas: Array.from(lemmaMap.values()),
+		lemmas,
 	}
 }
