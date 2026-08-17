@@ -297,48 +297,32 @@ export async function createProject(
 	input: CreateProjectInput,
 ): Promise<CreateProjectResult> {
 	const projectId = randomUUID()
-	const chapterId = randomUUID()
 	const timestamp = new Date().toISOString()
 
-	await withTransaction(async (client) => {
-		await client.query(
-			`
-				INSERT INTO projects (
-					id,
-					user_id,
-					name,
-					description,
-					language,
-					created_at,
-					updated_at
-				) VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`,
-			[
-				projectId,
-				userId,
-				input.name,
-				input.description,
-				input.language,
-				timestamp,
-				timestamp,
-			],
-		)
-		await client.query(
-			`
-				INSERT INTO chapters (
-					id,
-					project_id,
-					title,
-					position,
-					created_at,
-					updated_at
-				) VALUES ($1, $2, $3, $4, $5, $6)
-			`,
-			[chapterId, projectId, 'Chapter I', 1, timestamp, timestamp],
-		)
-	})
+	await getPool().query(
+		`
+			INSERT INTO projects (
+				id,
+				user_id,
+				name,
+				description,
+				language,
+				created_at,
+				updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`,
+		[
+			projectId,
+			userId,
+			input.name,
+			input.description,
+			input.language,
+			timestamp,
+			timestamp,
+		],
+	)
 
-	return { projectId, chapterId }
+	return { projectId }
 }
 
 export async function getProjectForUser(

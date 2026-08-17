@@ -156,9 +156,8 @@ WHEN user submits the project dialog:
 	trim name and description
 	validate name is present and language is LATIN or GREEK
 	insert project with current Clerk user ID
-	insert a first blank chapter named "Chapter I"
 	revalidate dashboard
-	redirect to the new chapter workspace
+	redirect to the empty project page
 ```
 
 ### Create or import a chapter

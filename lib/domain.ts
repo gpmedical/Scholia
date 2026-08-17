@@ -113,7 +113,6 @@ export interface CreateProjectInput {
 
 export interface CreateProjectResult {
 	projectId: string
-	chapterId: string
 }
 
 export interface CreateChapterInput {

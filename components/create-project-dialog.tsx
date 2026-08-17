@@ -65,9 +65,7 @@ export function CreateProjectDialog({
 			}
 
 			setIsOpen(false)
-			router.push(
-				`/projects/${result.data.projectId}/chapters/` + result.data.chapterId,
-			)
+			router.push(`/projects/${result.data.projectId}`)
 		})
 	}
 
