@@ -2,7 +2,8 @@ import 'server-only'
 
 import { randomUUID } from 'node:crypto'
 
-import { database } from '@/lib/database'
+import { getDatabase } from '@netlify/database'
+
 import type {
 	Annotation,
 	ChapterSummary,
@@ -24,14 +25,31 @@ import type {
 } from '@/lib/domain'
 import { getLineNumber, reanchorTextRange } from '@/lib/text-selection'
 
+interface QueryResult {
+	rows: Record<string, unknown>[]
+	rowCount: number | null
+}
+
+interface QueryExecutor {
+	query(queryText: string, values?: unknown[]): Promise<QueryResult>
+}
+
+interface QueryClient extends QueryExecutor {
+	release(): void
+}
+
+interface DatabasePool extends QueryExecutor {
+	connect(): Promise<QueryClient>
+}
+
 interface ProjectRow {
 	id: string
 	name: string
 	description: string
 	language: Language
-	chapter_count: number
-	annotation_count: number
-	lemma_count?: number
+	chapter_count: string | number
+	annotation_count: string | number
+	lemma_count?: string | number
 	updated_at: string
 }
 
@@ -42,7 +60,7 @@ interface ChapterRow {
 	position: number
 	original_text?: string
 	translation_text?: string
-	annotation_count: number
+	annotation_count: string | number
 	updated_at: string
 }
 
@@ -66,7 +84,7 @@ interface AnnotationRow {
 	part_of_speech: PartOfSpeech
 	morphology_json: string
 	comment: string
-	is_orphaned: number
+	is_orphaned: boolean
 	created_at: string
 	updated_at: string
 }
@@ -80,7 +98,7 @@ interface OccurrenceRow extends LemmaRow {
 	line_number: number | null
 	morphology_json: string | null
 	comment: string | null
-	is_orphaned: number | null
+	is_orphaned: boolean | null
 }
 
 interface OwnedChapterRow {
@@ -90,14 +108,61 @@ interface OwnedChapterRow {
 	translation_text: string
 }
 
+let databasePool: DatabasePool | undefined
+
+function getPool(): DatabasePool {
+	databasePool ??= getDatabase().pool as unknown as DatabasePool
+
+	return databasePool
+}
+
+async function queryRows<T>(
+	queryText: string,
+	values: unknown[] = [],
+	executor: QueryExecutor = getPool(),
+): Promise<T[]> {
+	const result = await executor.query(queryText, values)
+
+	return result.rows as unknown as T[]
+}
+
+async function withTransaction<T>(
+	callback: (client: QueryClient) => Promise<T>,
+): Promise<T> {
+	const client = await getPool().connect()
+
+	try {
+		await client.query('BEGIN')
+		const result = await callback(client)
+		await client.query('COMMIT')
+
+		return result
+	} catch (err) {
+		try {
+			await client.query('ROLLBACK')
+		} catch (rollbackError) {
+			console.error('Database rollback failed', {
+				type:
+					rollbackError instanceof Error
+						? rollbackError.name
+						: typeof rollbackError,
+			})
+		}
+
+		throw err
+	} finally {
+		client.release()
+	}
+}
+
 function mapProject(row: ProjectRow): ProjectSummary {
 	return {
 		id: row.id,
 		name: row.name,
 		description: row.description,
 		language: row.language,
-		chapterCount: row.chapter_count,
-		annotationCount: row.annotation_count,
+		chapterCount: Number(row.chapter_count),
+		annotationCount: Number(row.annotation_count),
 		updatedAt: row.updated_at,
 	}
 }
@@ -107,7 +172,7 @@ function mapChapter(row: ChapterRow): ChapterSummary {
 		id: row.id,
 		title: row.title,
 		position: row.position,
-		annotationCount: row.annotation_count,
+		annotationCount: Number(row.annotation_count),
 		updatedAt: row.updated_at,
 	}
 }
@@ -135,7 +200,9 @@ function parseMorphology(value: string): Record<string, string> {
 			return parsedValue as Record<string, string>
 		}
 	} catch (err) {
-		console.error('Could not parse annotation morphology', err)
+		console.error('Could not parse annotation morphology', {
+			type: err instanceof Error ? err.name : typeof err,
+		})
 	}
 
 	return {}
@@ -153,7 +220,7 @@ function mapAnnotation(row: AnnotationRow): Annotation {
 		partOfSpeech: row.part_of_speech,
 		morphology: parseMorphology(row.morphology_json),
 		comment: row.comment,
-		isOrphaned: row.is_orphaned === 1,
+		isOrphaned: row.is_orphaned,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
 	}
@@ -163,13 +230,14 @@ function normalizeHeadword(headword: string): string {
 	return headword.normalize('NFKC').trim().toLocaleLowerCase('und')
 }
 
-function getOwnedChapter(
+async function getOwnedChapter(
 	userId: string,
 	chapterId: string,
-): OwnedChapterRow | undefined {
-	return database
-		.prepare(
-			`
+	executor: QueryExecutor = getPool(),
+	lock = false,
+): Promise<OwnedChapterRow | undefined> {
+	const rows = await queryRows<OwnedChapterRow>(
+		`
 			SELECT
 				c.id,
 				c.project_id,
@@ -177,22 +245,32 @@ function getOwnedChapter(
 				c.translation_text
 			FROM chapters c
 			JOIN projects p ON p.id = c.project_id
-			WHERE c.id = ? AND p.user_id = ?
+			WHERE c.id = $1 AND p.user_id = $2
+			${lock ? 'FOR UPDATE OF c, p' : ''}
 		`,
-		)
-		.get(chapterId, userId) as OwnedChapterRow | undefined
+		[chapterId, userId],
+		executor,
+	)
+
+	return rows[0]
 }
 
-function touchProject(projectId: string, updatedAt: string): void {
-	database
-		.prepare('UPDATE projects SET updated_at = ? WHERE id = ?')
-		.run(updatedAt, projectId)
+async function touchProject(
+	projectId: string,
+	updatedAt: string,
+	executor: QueryExecutor,
+): Promise<void> {
+	await executor.query(
+		'UPDATE projects SET updated_at = $1 WHERE id = $2',
+		[updatedAt, projectId],
+	)
 }
 
-export function getProjectsForUser(userId: string): ProjectSummary[] {
-	const rows = database
-		.prepare(
-			`
+export async function getProjectsForUser(
+	userId: string,
+): Promise<ProjectSummary[]> {
+	const rows = await queryRows<ProjectRow>(
+		`
 			SELECT
 				p.id,
 				p.name,
@@ -204,28 +282,27 @@ export function getProjectsForUser(userId: string): ProjectSummary[] {
 			FROM projects p
 			LEFT JOIN chapters c ON c.project_id = p.id
 			LEFT JOIN annotations a ON a.chapter_id = c.id
-			WHERE p.user_id = ?
+			WHERE p.user_id = $1
 			GROUP BY p.id
 			ORDER BY p.updated_at DESC
 		`,
-		)
-		.all(userId) as ProjectRow[]
+		[userId],
+	)
 
 	return rows.map(mapProject)
 }
 
-export function createProject(
+export async function createProject(
 	userId: string,
 	input: CreateProjectInput,
-): CreateProjectResult {
+): Promise<CreateProjectResult> {
 	const projectId = randomUUID()
 	const chapterId = randomUUID()
 	const timestamp = new Date().toISOString()
 
-	database.transaction(() => {
-		database
-			.prepare(
-				`
+	await withTransaction(async (client) => {
+		await client.query(
+			`
 				INSERT INTO projects (
 					id,
 					user_id,
@@ -234,10 +311,9 @@ export function createProject(
 					language,
 					created_at,
 					updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?)
+				) VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`,
-			)
-			.run(
+			[
 				projectId,
 				userId,
 				input.name,
@@ -245,11 +321,10 @@ export function createProject(
 				input.language,
 				timestamp,
 				timestamp,
-			)
-
-		database
-			.prepare(
-				`
+			],
+		)
+		await client.query(
+			`
 				INSERT INTO chapters (
 					id,
 					project_id,
@@ -257,22 +332,21 @@ export function createProject(
 					position,
 					created_at,
 					updated_at
-				) VALUES (?, ?, ?, ?, ?, ?)
+				) VALUES ($1, $2, $3, $4, $5, $6)
 			`,
-			)
-			.run(chapterId, projectId, 'Chapter I', 1, timestamp, timestamp)
-	})()
+			[chapterId, projectId, 'Chapter I', 1, timestamp, timestamp],
+		)
+	})
 
 	return { projectId, chapterId }
 }
 
-export function getProjectForUser(
+export async function getProjectForUser(
 	userId: string,
 	projectId: string,
-): ProjectDetail | null {
-	const project = database
-		.prepare(
-			`
+): Promise<ProjectDetail | null> {
+	const projectRows = await queryRows<ProjectRow>(
+		`
 			SELECT
 				p.id,
 				p.name,
@@ -286,19 +360,19 @@ export function getProjectForUser(
 			LEFT JOIN chapters c ON c.project_id = p.id
 			LEFT JOIN annotations a ON a.chapter_id = c.id
 			LEFT JOIN lemmas l ON l.project_id = p.id
-			WHERE p.id = ? AND p.user_id = ?
+			WHERE p.id = $1 AND p.user_id = $2
 			GROUP BY p.id
 		`,
-		)
-		.get(projectId, userId) as ProjectRow | undefined
+		[projectId, userId],
+	)
+	const project = projectRows[0]
 
 	if (!project) {
 		return null
 	}
 
-	const chapters = database
-		.prepare(
-			`
+	const chapters = await queryRows<ChapterRow>(
+		`
 			SELECT
 				c.id,
 				c.title,
@@ -307,74 +381,85 @@ export function getProjectForUser(
 				COUNT(a.id) AS annotation_count
 			FROM chapters c
 			LEFT JOIN annotations a ON a.chapter_id = c.id
-			WHERE c.project_id = ?
+			WHERE c.project_id = $1
 			GROUP BY c.id
 			ORDER BY c.position ASC
 		`,
-		)
-		.all(projectId) as ChapterRow[]
+		[projectId],
+	)
 
 	return {
 		...mapProject(project),
-		lemmaCount: project.lemma_count ?? 0,
+		lemmaCount: Number(project.lemma_count ?? 0),
 		chapters: chapters.map(mapChapter),
 	}
 }
 
-export function deleteProject(userId: string, projectId: string): boolean {
-	const result = database
-		.prepare('DELETE FROM projects WHERE id = ? AND user_id = ?')
-		.run(projectId, userId)
+export async function deleteProject(
+	userId: string,
+	projectId: string,
+): Promise<boolean> {
+	const result = await getPool().query(
+		'DELETE FROM projects WHERE id = $1 AND user_id = $2 RETURNING id',
+		[projectId, userId],
+	)
 
-	return result.changes === 1
+	return result.rows.length === 1
 }
 
-export function renameProject(
+export async function renameProject(
 	userId: string,
 	input: RenameProjectInput,
-): boolean {
+): Promise<boolean> {
 	const timestamp = new Date().toISOString()
-	const result = database
-		.prepare(
-			`
+	const result = await getPool().query(
+		`
 			UPDATE projects
-			SET name = ?, updated_at = ?
-			WHERE id = ? AND user_id = ?
+			SET name = $1, updated_at = $2
+			WHERE id = $3 AND user_id = $4
+			RETURNING id
 		`,
-		)
-		.run(input.name, timestamp, input.projectId, userId)
+		[input.name, timestamp, input.projectId, userId],
+	)
 
-	return result.changes === 1
+	return result.rows.length === 1
 }
 
-export function createChapter(
+export async function createChapter(
 	userId: string,
 	input: CreateChapterInput,
-): ChapterSummary {
-	const project = database
-		.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?')
-		.get(input.projectId, userId) as { id: string } | undefined
-
-	if (!project) {
-		throw new Error('Project not found')
-	}
-
-	const nextPosition = database
-		.prepare(
+): Promise<ChapterSummary> {
+	return withTransaction(async (client) => {
+		const projectRows = await queryRows<{ id: string }>(
 			`
-			SELECT COALESCE(MAX(position), 0) + 1 AS position
-			FROM chapters
-			WHERE project_id = ?
-		`,
+				SELECT id
+				FROM projects
+				WHERE id = $1 AND user_id = $2
+				FOR UPDATE
+			`,
+			[input.projectId, userId],
+			client,
 		)
-		.get(input.projectId) as { position: number }
-	const chapterId = randomUUID()
-	const timestamp = new Date().toISOString()
 
-	database.transaction(() => {
-		database
-			.prepare(
-				`
+		if (!projectRows[0]) {
+			throw new Error('Project not found')
+		}
+
+		const positionRows = await queryRows<{ position: number }>(
+			`
+				SELECT COALESCE(MAX(position), 0) + 1 AS position
+				FROM chapters
+				WHERE project_id = $1
+			`,
+			[input.projectId],
+			client,
+		)
+		const position = Number(positionRows[0]?.position ?? 1)
+		const chapterId = randomUUID()
+		const timestamp = new Date().toISOString()
+
+		await client.query(
+			`
 				INSERT INTO chapters (
 					id,
 					project_id,
@@ -383,89 +468,93 @@ export function createChapter(
 					original_text,
 					created_at,
 					updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?)
+				) VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`,
-			)
-			.run(
+			[
 				chapterId,
 				input.projectId,
 				input.title,
-				nextPosition.position,
+				position,
 				input.originalText,
 				timestamp,
 				timestamp,
-			)
-		touchProject(input.projectId, timestamp)
-	})()
+			],
+		)
+		await touchProject(input.projectId, timestamp, client)
 
-	return {
-		id: chapterId,
-		title: input.title,
-		position: nextPosition.position,
-		annotationCount: 0,
-		updatedAt: timestamp,
-	}
+		return {
+			id: chapterId,
+			title: input.title,
+			position,
+			annotationCount: 0,
+			updatedAt: timestamp,
+		}
+	})
 }
 
-export function deleteChapter(userId: string, chapterId: string): boolean {
-	const chapter = getOwnedChapter(userId, chapterId)
+export async function deleteChapter(
+	userId: string,
+	chapterId: string,
+): Promise<boolean> {
+	return withTransaction(async (client) => {
+		const chapter = await getOwnedChapter(userId, chapterId, client, true)
 
-	if (!chapter) {
-		return false
-	}
+		if (!chapter) {
+			return false
+		}
 
-	const timestamp = new Date().toISOString()
+		const timestamp = new Date().toISOString()
+		await client.query('DELETE FROM chapters WHERE id = $1', [chapterId])
+		await touchProject(chapter.project_id, timestamp, client)
 
-	database.transaction(() => {
-		database.prepare('DELETE FROM chapters WHERE id = ?').run(chapterId)
-		touchProject(chapter.project_id, timestamp)
-	})()
-
-	return true
+		return true
+	})
 }
 
-export function renameChapter(
+export async function renameChapter(
 	userId: string,
 	input: RenameChapterInput,
-): string | null {
-	const chapter = getOwnedChapter(userId, input.chapterId)
+): Promise<string | null> {
+	return withTransaction(async (client) => {
+		const chapter = await getOwnedChapter(
+			userId,
+			input.chapterId,
+			client,
+			true,
+		)
 
-	if (!chapter) {
-		return null
-	}
+		if (!chapter) {
+			return null
+		}
 
-	const timestamp = new Date().toISOString()
-
-	database.transaction(() => {
-		database
-			.prepare(
-				`
+		const timestamp = new Date().toISOString()
+		await client.query(
+			`
 				UPDATE chapters
-				SET title = ?, updated_at = ?
-				WHERE id = ?
+				SET title = $1, updated_at = $2
+				WHERE id = $3
 			`,
-			)
-			.run(input.title, timestamp, input.chapterId)
-		touchProject(chapter.project_id, timestamp)
-	})()
+			[input.title, timestamp, input.chapterId],
+		)
+		await touchProject(chapter.project_id, timestamp, client)
 
-	return chapter.project_id
+		return chapter.project_id
+	})
 }
 
-export function getChapterWorkspace(
+export async function getChapterWorkspace(
 	userId: string,
 	projectId: string,
 	chapterId: string,
-): ChapterWorkspaceData | null {
-	const project = getProjectForUser(userId, projectId)
+): Promise<ChapterWorkspaceData | null> {
+	const project = await getProjectForUser(userId, projectId)
 
 	if (!project) {
 		return null
 	}
 
-	const chapter = database
-		.prepare(
-			`
+	const chapterRows = await queryRows<ChapterRow>(
+		`
 			SELECT
 				c.id,
 				c.title,
@@ -476,43 +565,43 @@ export function getChapterWorkspace(
 				COUNT(a.id) AS annotation_count
 			FROM chapters c
 			LEFT JOIN annotations a ON a.chapter_id = c.id
-			WHERE c.id = ? AND c.project_id = ?
+			WHERE c.id = $1 AND c.project_id = $2
 			GROUP BY c.id
 		`,
-		)
-		.get(chapterId, projectId) as ChapterRow | undefined
+		[chapterId, projectId],
+	)
+	const chapter = chapterRows[0]
 
 	if (!chapter) {
 		return null
 	}
 
-	const lemmas = database
-		.prepare(
+	const [lemmas, annotations] = await Promise.all([
+		queryRows<LemmaRow>(
 			`
-			SELECT
-				id,
-				project_id,
-				headword,
-				gloss,
-				part_of_speech,
-				details
-			FROM lemmas
-			WHERE project_id = ?
-			ORDER BY headword_normalized ASC
-		`,
-		)
-		.all(projectId) as LemmaRow[]
-
-	const annotations = database
-		.prepare(
+				SELECT
+					id,
+					project_id,
+					headword,
+					gloss,
+					part_of_speech,
+					details
+				FROM lemmas
+				WHERE project_id = $1
+				ORDER BY headword_normalized ASC
+			`,
+			[projectId],
+		),
+		queryRows<AnnotationRow>(
 			`
-			SELECT *
-			FROM annotations
-			WHERE chapter_id = ?
-			ORDER BY is_orphaned ASC, start_offset ASC, created_at ASC
-		`,
-		)
-		.all(chapterId) as AnnotationRow[]
+				SELECT *
+				FROM annotations
+				WHERE chapter_id = $1
+				ORDER BY is_orphaned ASC, start_offset ASC, created_at ASC
+			`,
+			[chapterId],
+		),
+	])
 
 	return {
 		project: {
@@ -532,34 +621,30 @@ export function getChapterWorkspace(
 	}
 }
 
-export function saveChapterContent(
+export async function saveChapterContent(
 	userId: string,
 	input: SaveChapterContentInput,
-): Annotation[] {
-	const chapter = getOwnedChapter(userId, input.chapterId)
+): Promise<Annotation[]> {
+	return withTransaction(async (client) => {
+		const chapter = await getOwnedChapter(
+			userId,
+			input.chapterId,
+			client,
+			true,
+		)
 
-	if (!chapter) {
-		throw new Error('Chapter not found')
-	}
+		if (!chapter) {
+			throw new Error('Chapter not found')
+		}
 
-	const timestamp = new Date().toISOString()
-	const annotationRows = database
-		.prepare('SELECT * FROM annotations WHERE chapter_id = ?')
-		.all(input.chapterId) as AnnotationRow[]
+		const timestamp = new Date().toISOString()
+		const annotationRows = await queryRows<AnnotationRow>(
+			'SELECT * FROM annotations WHERE chapter_id = $1 FOR UPDATE',
+			[input.chapterId],
+			client,
+		)
 
-	database.transaction(() => {
 		if (chapter.original_text !== input.originalText) {
-			const updateAnnotation = database.prepare(`
-				UPDATE annotations
-				SET
-					start_offset = ?,
-					end_offset = ?,
-					line_number = ?,
-					is_orphaned = ?,
-					updated_at = ?
-				WHERE id = ?
-			`)
-
 			for (const annotation of annotationRows) {
 				const range = reanchorTextRange(
 					input.originalText,
@@ -568,98 +653,90 @@ export function saveChapterContent(
 					annotation.end_offset,
 				)
 
-				updateAnnotation.run(
-					range.startOffset,
-					range.endOffset,
-					range.lineNumber,
-					range.isOrphaned ? 1 : 0,
-					timestamp,
-					annotation.id,
+				await client.query(
+					`
+						UPDATE annotations
+						SET
+							start_offset = $1,
+							end_offset = $2,
+							line_number = $3,
+							is_orphaned = $4,
+							updated_at = $5
+						WHERE id = $6
+					`,
+					[
+						range.startOffset,
+						range.endOffset,
+						range.lineNumber,
+						range.isOrphaned,
+						timestamp,
+						annotation.id,
+					],
 				)
 			}
 		}
 
-		database
-			.prepare(
-				`
+		await client.query(
+			`
 				UPDATE chapters
 				SET
-					original_text = ?,
-					translation_text = ?,
-					updated_at = ?
-				WHERE id = ?
+					original_text = $1,
+					translation_text = $2,
+					updated_at = $3
+				WHERE id = $4
 			`,
-			)
-			.run(
+			[
 				input.originalText,
 				input.translationText,
 				timestamp,
 				input.chapterId,
-			)
-		touchProject(chapter.project_id, timestamp)
-	})()
-
-	const rows = database
-		.prepare(
-			`
-			SELECT *
-			FROM annotations
-			WHERE chapter_id = ?
-			ORDER BY is_orphaned ASC, start_offset ASC, created_at ASC
-		`,
+			],
 		)
-		.all(input.chapterId) as AnnotationRow[]
+		await touchProject(chapter.project_id, timestamp, client)
 
-	return rows.map(mapAnnotation)
+		const rows = await queryRows<AnnotationRow>(
+			`
+				SELECT *
+				FROM annotations
+				WHERE chapter_id = $1
+				ORDER BY is_orphaned ASC, start_offset ASC, created_at ASC
+			`,
+			[input.chapterId],
+			client,
+		)
+
+		return rows.map(mapAnnotation)
+	})
 }
 
-function resolveLemmaId(
+async function resolveLemmaId(
+	executor: QueryExecutor,
 	projectId: string,
 	input: UpsertAnnotationInput,
 	timestamp: string,
-): string | null {
+): Promise<string | null> {
 	if (!input.lemma) {
 		return null
 	}
 
 	if (input.lemma.type === 'existing') {
-		const lemma = database
-			.prepare(
-				`
-				SELECT id
-				FROM lemmas
-				WHERE id = ? AND project_id = ?
-			`,
-			)
-			.get(input.lemma.lemmaId, projectId) as { id: string } | undefined
+		const rows = await queryRows<{ id: string }>(
+			'SELECT id FROM lemmas WHERE id = $1 AND project_id = $2',
+			[input.lemma.lemmaId, projectId],
+			executor,
+		)
 
-		if (!lemma) {
+		if (!rows[0]) {
 			throw new Error('Base form not found')
 		}
 
-		return lemma.id
+		return rows[0].id
 	}
 
 	const normalizedHeadword = normalizeHeadword(input.lemma.headword)
-	const existingLemma = database
-		.prepare(
-			`
-			SELECT id
-			FROM lemmas
-			WHERE project_id = ? AND headword_normalized = ?
-		`,
-		)
-		.get(projectId, normalizedHeadword) as { id: string } | undefined
-
-	if (existingLemma) {
-		return existingLemma.id
-	}
-
 	const lemmaId = randomUUID()
-
-	database
-		.prepare(
-			`
+	const insertedRows = await queryRows<{ id: string }>(
+		`
 			INSERT INTO lemmas (
 				id,
 				project_id,
@@ -670,10 +747,11 @@ function resolveLemmaId(
 				details,
 				created_at,
 				updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (project_id, headword_normalized) DO NOTHING
+			RETURNING id
 		`,
-		)
-		.run(
+		[
 			lemmaId,
 			projectId,
 			input.lemma.headword,
@@ -683,75 +761,103 @@ function resolveLemmaId(
 			input.lemma.details,
 			timestamp,
 			timestamp,
-		)
+		],
+		executor,
+	)
 
-	return lemmaId
+	if (insertedRows[0]) {
+		return insertedRows[0].id
+	}
+
+	const existingRows = await queryRows<{ id: string }>(
+		`
+			SELECT id
+			FROM lemmas
+			WHERE project_id = $1 AND headword_normalized = $2
+		`,
+		[projectId, normalizedHeadword],
+		executor,
+	)
+	const existingLemma = existingRows[0]
+
+	if (!existingLemma) {
+		throw new Error('Base form could not be saved')
+	}
+
+	return existingLemma.id
 }
 
-export function upsertAnnotation(
+export async function upsertAnnotation(
 	userId: string,
 	input: UpsertAnnotationInput,
-): { annotation: Annotation; lemmas: Lemma[] } {
-	const chapter = getOwnedChapter(userId, input.chapterId)
+): Promise<{ annotation: Annotation; lemmas: Lemma[] }> {
+	return withTransaction(async (client) => {
+		const chapter = await getOwnedChapter(
+			userId,
+			input.chapterId,
+			client,
+			true,
+		)
 
-	if (!chapter) {
-		throw new Error('Chapter not found')
-	}
+		if (!chapter) {
+			throw new Error('Chapter not found')
+		}
 
-	if (
-		chapter.original_text.slice(input.startOffset, input.endOffset) !==
-		input.selectedText
-	) {
-		throw new Error('The source text changed. Select the passage again.')
-	}
+		if (
+			chapter.original_text.slice(input.startOffset, input.endOffset) !==
+			input.selectedText
+		) {
+			throw new Error('The source text changed. Select the passage again.')
+		}
 
-	const annotationId = input.annotationId ?? randomUUID()
-	const timestamp = new Date().toISOString()
-	const lineNumber = getLineNumber(chapter.original_text, input.startOffset)
-
-	database.transaction(() => {
 		if (input.annotationId) {
-			const existingAnnotation = database
-				.prepare(
-					`
+			const existingRows = await queryRows<{ id: string }>(
+				`
 					SELECT a.id
 					FROM annotations a
 					JOIN chapters c ON c.id = a.chapter_id
 					JOIN projects p ON p.id = c.project_id
-					WHERE a.id = ? AND a.chapter_id = ? AND p.user_id = ?
+					WHERE a.id = $1 AND a.chapter_id = $2 AND p.user_id = $3
+					FOR UPDATE OF a
 				`,
-				)
-				.get(input.annotationId, input.chapterId, userId) as
-				{ id: string } | undefined
+				[input.annotationId, input.chapterId, userId],
+				client,
+			)
 
-			if (!existingAnnotation) {
+			if (!existingRows[0]) {
 				throw new Error('Annotation not found')
 			}
 		}
 
-		const lemmaId = resolveLemmaId(chapter.project_id, input, timestamp)
+		const annotationId = input.annotationId ?? randomUUID()
+		const timestamp = new Date().toISOString()
+		const lineNumber = getLineNumber(chapter.original_text, input.startOffset)
+		const lemmaId = await resolveLemmaId(
+			client,
+			chapter.project_id,
+			input,
+			timestamp,
+		)
 		const morphologyJson = JSON.stringify(input.morphology)
 
 		if (input.annotationId) {
-			database
-				.prepare(
-					`
+			await client.query(
+				`
 					UPDATE annotations
 					SET
-						lemma_id = ?,
-						start_offset = ?,
-						end_offset = ?,
-						selected_text = ?,
-						line_number = ?,
-						part_of_speech = ?,
-						morphology_json = ?,
-						comment = ?,
-						is_orphaned = 0,
-						updated_at = ?
-					WHERE id = ?
+						lemma_id = $1,
+						start_offset = $2,
+						end_offset = $3,
+						selected_text = $4,
+						line_number = $5,
+						part_of_speech = $6,
+						morphology_json = $7,
+						comment = $8,
+						is_orphaned = FALSE,
+						updated_at = $9
+					WHERE id = $10
 				`,
-				)
-				.run(
+				[
 					lemmaId,
 					input.startOffset,
 					input.endOffset,
@@ -762,11 +868,11 @@ export function upsertAnnotation(
 					input.comment,
 					timestamp,
 					annotationId,
-				)
+				],
+			)
 		} else {
-			database
-				.prepare(
-					`
+			await client.query(
+				`
 					INSERT INTO annotations (
 						id,
 						chapter_id,
@@ -780,10 +886,9 @@ export function upsertAnnotation(
 						comment,
 						created_at,
 						updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 				`,
-				)
-				.run(
+				[
 					annotationId,
 					input.chapterId,
 					lemmaId,
@@ -796,88 +901,101 @@ export function upsertAnnotation(
 					input.comment,
 					timestamp,
 					timestamp,
-				)
+				],
+			)
 		}
 
-		database
-			.prepare('UPDATE chapters SET updated_at = ? WHERE id = ?')
-			.run(timestamp, input.chapterId)
-		touchProject(chapter.project_id, timestamp)
-	})()
-
-	const annotationRow = database
-		.prepare('SELECT * FROM annotations WHERE id = ?')
-		.get(annotationId) as AnnotationRow
-	const lemmaRows = database
-		.prepare(
-			`
-			SELECT
-				id,
-				project_id,
-				headword,
-				gloss,
-				part_of_speech,
-				details
-			FROM lemmas
-			WHERE project_id = ?
-			ORDER BY headword_normalized ASC
-		`,
+		await client.query(
+			'UPDATE chapters SET updated_at = $1 WHERE id = $2',
+			[timestamp, input.chapterId],
 		)
-		.all(chapter.project_id) as LemmaRow[]
+		await touchProject(chapter.project_id, timestamp, client)
 
-	return {
-		annotation: mapAnnotation(annotationRow),
-		lemmas: lemmaRows.map(mapLemma),
-	}
+		const annotationRows = await queryRows<AnnotationRow>(
+			'SELECT * FROM annotations WHERE id = $1',
+			[annotationId],
+			client,
+		)
+		const lemmaRows = await queryRows<LemmaRow>(
+			`
+					SELECT
+						id,
+						project_id,
+						headword,
+						gloss,
+						part_of_speech,
+						details
+					FROM lemmas
+					WHERE project_id = $1
+					ORDER BY headword_normalized ASC
+			`,
+			[chapter.project_id],
+			client,
+		)
+		const annotation = annotationRows[0]
+
+		if (!annotation) {
+			throw new Error('Annotation could not be saved')
+		}
+
+		return {
+			annotation: mapAnnotation(annotation),
+			lemmas: lemmaRows.map(mapLemma),
+		}
+	})
 }
 
-export function deleteAnnotation(
+export async function deleteAnnotation(
 	userId: string,
 	annotationId: string,
-): boolean {
-	const annotation = database
-		.prepare(
+): Promise<boolean> {
+	return withTransaction(async (client) => {
+		const rows = await queryRows<{
+			id: string
+			chapter_id: string
+			project_id: string
+		}>(
 			`
-			SELECT a.id, c.id AS chapter_id, p.id AS project_id
-			FROM annotations a
-			JOIN chapters c ON c.id = a.chapter_id
-			JOIN projects p ON p.id = c.project_id
-			WHERE a.id = ? AND p.user_id = ?
-		`,
+				SELECT a.id, c.id AS chapter_id, p.id AS project_id
+				FROM annotations a
+				JOIN chapters c ON c.id = a.chapter_id
+				JOIN projects p ON p.id = c.project_id
+				WHERE a.id = $1 AND p.user_id = $2
+				FOR UPDATE OF a, c, p
+			`,
+			[annotationId, userId],
+			client,
 		)
-		.get(annotationId, userId) as
-		{ id: string; chapter_id: string; project_id: string } | undefined
+		const annotation = rows[0]
 
-	if (!annotation) {
-		return false
-	}
+		if (!annotation) {
+			return false
+		}
 
-	const timestamp = new Date().toISOString()
+		const timestamp = new Date().toISOString()
+		await client.query('DELETE FROM annotations WHERE id = $1', [annotationId])
+		await client.query(
+			'UPDATE chapters SET updated_at = $1 WHERE id = $2',
+			[timestamp, annotation.chapter_id],
+		)
+		await touchProject(annotation.project_id, timestamp, client)
 
-	database.transaction(() => {
-		database.prepare('DELETE FROM annotations WHERE id = ?').run(annotationId)
-		database
-			.prepare('UPDATE chapters SET updated_at = ? WHERE id = ?')
-			.run(timestamp, annotation.chapter_id)
-		touchProject(annotation.project_id, timestamp)
-	})()
-
-	return true
+		return true
+	})
 }
 
-export function getProjectLexicon(
+export async function getProjectLexicon(
 	userId: string,
 	projectId: string,
-): ProjectLexiconData | null {
-	const project = getProjectForUser(userId, projectId)
+): Promise<ProjectLexiconData | null> {
+	const project = await getProjectForUser(userId, projectId)
 
 	if (!project) {
 		return null
 	}
 
-	const rows = database
-		.prepare(
-			`
+	const rows = await queryRows<OccurrenceRow>(
+		`
 			SELECT
 				l.id,
 				l.project_id,
@@ -897,14 +1015,14 @@ export function getProjectLexicon(
 			FROM lemmas l
 			LEFT JOIN annotations a ON a.lemma_id = l.id
 			LEFT JOIN chapters c ON c.id = a.chapter_id
-			WHERE l.project_id = ?
+			WHERE l.project_id = $1
 			ORDER BY
 				l.headword_normalized ASC,
 				c.position ASC,
 				a.line_number ASC
 		`,
-		)
-		.all(projectId) as OccurrenceRow[]
+		[projectId],
+	)
 	const lemmaMap = new Map<string, LemmaWithOccurrences>()
 
 	for (const row of rows) {
@@ -934,7 +1052,7 @@ export function getProjectLexicon(
 				lineNumber: row.line_number,
 				morphology: parseMorphology(row.morphology_json ?? '{}'),
 				comment: row.comment ?? '',
-				isOrphaned: row.is_orphaned === 1,
+				isOrphaned: row.is_orphaned === true,
 			})
 		}
 	}

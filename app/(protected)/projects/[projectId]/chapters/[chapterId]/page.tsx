@@ -29,7 +29,7 @@ export default async function ChapterPage({
 	const { projectId, chapterId } = await params
 	const { annotation } = await searchParams
 	const userId = await requireUserId()
-	const data = getChapterWorkspace(userId, projectId, chapterId)
+	const data = await getChapterWorkspace(userId, projectId, chapterId)
 
 	if (!data) {
 		notFound()

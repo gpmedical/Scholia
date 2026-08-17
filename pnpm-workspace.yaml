@@ -1,5 +1,4 @@
 allowBuilds:
-  better-sqlite3: true
   bufferutil: false
   core-js: false
   sharp: false

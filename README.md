@@ -24,8 +24,9 @@ Install dependencies:
 pnpm install
 ```
 
-Copy `.env.example` to `.env.local` and add keys from a Clerk application. The
-Clerk CLI can configure these automatically with `clerk init`.
+Create `.env.local` with the keys from a Clerk application and a server-only
+`NETLIFY_DB_URL` for Postgres. The Clerk CLI can configure the authentication
+keys automatically with `clerk init`.
 
 Start the development server:
 
@@ -33,24 +34,26 @@ Start the development server:
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). SQLite data is stored in
-`data/scholia.db`, which is intentionally ignored by Git.
+Open [http://localhost:3000](http://localhost:3000). To run against Netlify's
+local database environment instead, use `pnpm dlx netlify-cli dev` and apply
+the migration in `netlify/database/migrations` with the Netlify CLI.
 
 ## Verification
 
 ```bash
 pnpm typecheck
 pnpm lint
-pnpm test
 pnpm build
 ```
 
 The architecture, data flow, pseudocode, and edge-case decisions are documented
 in [`docs/architecture.md`](docs/architecture.md).
 
-## Deployment note
+## Deployment
 
-The included SQLite adapter is ideal for local or single-server deployments.
-Before deploying to an ephemeral or multi-instance platform, replace the adapter
-behind `lib/data-access.ts` with a durable SQL service while keeping the same
-user-ownership checks.
+The server-only data layer uses Netlify Database (managed Postgres). The schema
+in `netlify/database/migrations` is applied by Netlify during deployment.
+
+The database connection string must remain a Functions-scoped server variable.
+Do not prefix it with `NEXT_PUBLIC_`, expose it to Client Components, or add it
+to `SECRETS_SCAN_OMIT_KEYS`.

@@ -27,7 +27,7 @@ const dateFormatter = new Intl.DateTimeFormat('en', {
 
 export default async function DashboardPage() {
 	const userId = await requireUserId()
-	const projects = getProjectsForUser(userId)
+	const projects = await getProjectsForUser(userId)
 
 	return (
 		<main className='mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 sm:py-14'>
