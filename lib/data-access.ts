@@ -21,6 +21,7 @@ import type {
 	RenameChapterInput,
 	RenameProjectInput,
 	SaveChapterContentInput,
+	UpdateLemmaInput,
 	UpsertAnnotationInput,
 } from '@/lib/domain'
 import { getLineNumber, reanchorTextRange } from '@/lib/text-selection'
@@ -228,6 +229,15 @@ function mapAnnotation(row: AnnotationRow): Annotation {
 
 function normalizeHeadword(headword: string): string {
 	return headword.normalize('NFKC').trim().toLocaleLowerCase('und')
+}
+
+function isUniqueConstraintViolation(err: unknown): boolean {
+	return (
+		typeof err === 'object' &&
+		err !== null &&
+		'code' in err &&
+		err.code === '23505'
+	)
 }
 
 async function getOwnedChapter(
@@ -769,6 +779,83 @@ async function resolveLemmaId(
 	}
 
 	return existingLemma.id
+}
+
+export async function updateLemma(
+	userId: string,
+	input: UpdateLemmaInput,
+): Promise<string | null> {
+	try {
+		return await withTransaction(async (client) => {
+			const lemmaRows = await queryRows<{ project_id: string }>(
+				`
+					SELECT l.project_id
+					FROM lemmas l
+					JOIN projects p ON p.id = l.project_id
+					WHERE l.id = $1 AND p.user_id = $2
+					FOR UPDATE OF l, p
+				`,
+				[input.lemmaId, userId],
+				client,
+			)
+			const lemma = lemmaRows[0]
+
+			if (!lemma) {
+				return null
+			}
+
+			const normalizedHeadword = normalizeHeadword(input.headword)
+			const duplicateRows = await queryRows<{ id: string }>(
+				`
+					SELECT id
+					FROM lemmas
+					WHERE
+						project_id = $1 AND
+						headword_normalized = $2 AND
+						id <> $3
+				`,
+				[lemma.project_id, normalizedHeadword, input.lemmaId],
+				client,
+			)
+
+			if (duplicateRows[0]) {
+				throw new Error('A base form with this headword already exists')
+			}
+
+			const timestamp = new Date().toISOString()
+			await client.query(
+				`
+					UPDATE lemmas
+					SET
+						headword = $1,
+						headword_normalized = $2,
+						gloss = $3,
+						part_of_speech = $4,
+						details = $5,
+						updated_at = $6
+					WHERE id = $7
+				`,
+				[
+					input.headword,
+					normalizedHeadword,
+					input.gloss,
+					input.partOfSpeech,
+					input.details,
+					timestamp,
+					input.lemmaId,
+				],
+			)
+			await touchProject(lemma.project_id, timestamp, client)
+
+			return lemma.project_id
+		})
+	} catch (err) {
+		if (isUniqueConstraintViolation(err)) {
+			throw new Error('A base form with this headword already exists')
+		}
+
+		throw err
+	}
 }
 
 export async function upsertAnnotation(

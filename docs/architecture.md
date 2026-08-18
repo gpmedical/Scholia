@@ -255,6 +255,13 @@ ON occurrence click:
 	navigate to its chapter with annotation ID in the query string
 	initialize the workspace selection to the annotation range
 	display the corresponding note in the bottom panel
+
+ON lemma edit:
+	prefill headword, gloss, part of speech, and dictionary details
+	validate all fields and verify lemma ownership on the server
+	reject a normalized headword that belongs to another project lemma
+	update the lemma without changing its ID or occurrence links
+	re-sort and revalidate the lemma index
 ```
 
 ## Error and edge-case handling

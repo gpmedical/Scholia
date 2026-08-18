@@ -2,6 +2,7 @@ import { ArrowLeft, BookMarked, LibraryBig } from 'lucide-react'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
+import { updateLemmaAction } from '@/app/actions'
 import { LemmaExplorer } from '@/components/lemma-explorer'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -65,7 +66,7 @@ export default async function LexiconPage({ params }: LexiconPageProps) {
 			</div>
 
 			<div className='folio-rule my-8 opacity-60' />
-			<LemmaExplorer data={data} />
+			<LemmaExplorer data={data} updateLemma={updateLemmaAction} />
 		</main>
 	)
 }

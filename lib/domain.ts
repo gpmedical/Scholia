@@ -137,6 +137,14 @@ export interface SaveChapterContentInput {
 	translationText: string
 }
 
+export interface UpdateLemmaInput {
+	lemmaId: string
+	headword: string
+	gloss: string
+	partOfSpeech: PartOfSpeech
+	details: string
+}
+
 export type LemmaChoice =
 	| {
 			type: 'existing'

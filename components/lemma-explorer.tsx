@@ -10,6 +10,7 @@ import {
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
 
+import { EditLemmaDialog } from '@/components/edit-lemma-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -30,16 +31,19 @@ import {
 import {
 	PARTS_OF_SPEECH,
 	getPartOfSpeechLabel,
+	type ActionResult,
 	type PartOfSpeech,
 	type ProjectLexiconData,
+	type UpdateLemmaInput,
 } from '@/lib/domain'
 import { formatMorphology } from '@/lib/morphology'
 
 interface LemmaExplorerProps {
 	data: ProjectLexiconData
+	updateLemma: (input: UpdateLemmaInput) => Promise<ActionResult<null>>
 }
 
-export function LemmaExplorer({ data }: LemmaExplorerProps) {
+export function LemmaExplorer({ data, updateLemma }: LemmaExplorerProps) {
 	const [query, setQuery] = useState('')
 	const [partOfSpeech, setPartOfSpeech] = useState<PartOfSpeech | 'ALL'>('ALL')
 	const filteredLemmas = useMemo(() => {
@@ -164,12 +168,18 @@ export function LemmaExplorer({ data }: LemmaExplorerProps) {
 											{lemma.details ? ` · ${lemma.details}` : ''}
 										</CardDescription>
 									</div>
-									<Badge variant='outline' className='sm:ms-auto'>
-										{lemma.occurrences.length}{' '}
-										{lemma.occurrences.length === 1
-											? 'occurrence'
-											: 'occurrences'}
-									</Badge>
+									<div className='flex items-center gap-2 sm:ms-auto'>
+										<Badge variant='outline'>
+											{lemma.occurrences.length}{' '}
+											{lemma.occurrences.length === 1
+												? 'occurrence'
+												: 'occurrences'}
+										</Badge>
+										<EditLemmaDialog
+											lemma={lemma}
+											updateLemma={updateLemma}
+										/>
+									</div>
 								</div>
 							</CardHeader>
 							<CardContent className='p-0'>

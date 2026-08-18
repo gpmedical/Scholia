@@ -13,6 +13,7 @@ import {
 	renameChapter,
 	renameProject,
 	saveChapterContent,
+	updateLemma,
 	upsertAnnotation,
 } from '@/lib/data-access'
 import {
@@ -28,6 +29,7 @@ import {
 	type RenameChapterInput,
 	type RenameProjectInput,
 	type SaveChapterContentInput,
+	type UpdateLemmaInput,
 	type UpsertAnnotationInput,
 } from '@/lib/domain'
 
@@ -59,6 +61,14 @@ const saveChapterContentSchema = z.object({
 	chapterId: identifierSchema,
 	originalText: z.string().max(1_000_000),
 	translationText: z.string().max(1_000_000),
+})
+
+const updateLemmaSchema = z.object({
+	lemmaId: identifierSchema,
+	headword: z.string().trim().min(1).max(120),
+	gloss: z.string().trim().max(240),
+	partOfSpeech: z.enum(PARTS_OF_SPEECH),
+	details: z.string().trim().max(300),
 })
 
 const lemmaChoiceSchema = z.discriminatedUnion('type', [
@@ -96,6 +106,7 @@ const upsertAnnotationSchema = z
 
 const SAFE_ACTION_ERRORS = new Set([
 	'Annotation not found',
+	'A base form with this headword already exists',
 	'Base form not found',
 	'Chapter not found',
 	'Project not found',
@@ -245,6 +256,27 @@ export async function saveChapterContentAction(
 		const annotations = await saveChapterContent(userId, validatedInput)
 
 		return { success: true, data: annotations }
+	} catch (err) {
+		return { success: false, error: getActionError(err) }
+	}
+}
+
+export async function updateLemmaAction(
+	input: UpdateLemmaInput,
+): Promise<ActionResult<null>> {
+	try {
+		const userId = await requireUserId()
+		const validatedInput = updateLemmaSchema.parse(input)
+		const projectId = await updateLemma(userId, validatedInput)
+
+		if (!projectId) {
+			throw new Error('Base form not found')
+		}
+
+		revalidatePath('/dashboard')
+		revalidatePath(`/projects/${projectId}/lexicon`)
+
+		return { success: true, data: null }
 	} catch (err) {
 		return { success: false, error: getActionError(err) }
 	}
